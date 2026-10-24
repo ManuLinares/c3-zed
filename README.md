@@ -1,17 +1,21 @@
-# C3 Zed Extension
+# C3 Extension for Zed
 
-## Installation:
-1. Open Zed's command palette `Ctrl+Shift+P` and select `extensions`
-2. Search for `C3` and click on `Install`
+C3 language support for the [Zed editor](https://zed.dev).
 
-## Manual Installation:
-1. `git clone https://github.com/AineeJames/c3-zed`
-2. Open Zed's command palette `Ctrl+Shift+P` and select `extensions`
-3. Click on `Install Dev Extension` and select the cloned directory
+## Features
 
-## Credits:
-- Tree Sitter: [c3lang/tree-sitter-c3](https://github.com/c3lang/tree-sitter-c3)
-- LSP: [perrymason/c3-lsp](https://github.com/pherrymason/c3-lsp)
+- Syntax highlighting via [tree-sitter-c3](https://github.com/c3lang/tree-sitter-c3)
+- Outline view
+- Indentation rules
+- Automatic LSP management via [c3_ls](https://github.com/ManuLinares/c3_ls) (downloads precompiled binaries or resolves `c3_ls` from `PATH`)
 
-> [!WARNING]
-> This plugin is a WIP and may not work as expected.
+## Development
+
+To test locally:
+1. Run `zeditor: install dev extension` in Zed.
+2. Select this directory.
+
+To update queries from upstream:
+```bash
+./scripts/update_grammar.sh
+```

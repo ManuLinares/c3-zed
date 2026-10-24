@@ -1,125 +1,125 @@
-use zed_extension_api::{self as zed, lsp::CompletionKind, Result};
+use std::fs;
+use zed_extension_api::{
+    self as zed, current_platform, download_file, latest_github_release, make_file_executable,
+    set_language_server_installation_status, Architecture, DownloadedFileType, GithubReleaseOptions,
+    LanguageServerId, LanguageServerInstallationStatus, Os, Result,
+};
 
-struct C3Extension;
+struct C3Extension {
+    cached_binary_path: Option<String>,
+}
+
+impl C3Extension {
+    fn language_server_binary_path(
+        &mut self,
+        language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<String> {
+        // 1. Prefer binary from PATH if present
+        if let Some(path) = worktree.which("c3_ls") {
+            return Ok(path);
+        }
+        if let Some(path) = worktree.which("c3lsp") {
+            return Ok(path);
+        }
+
+        // 2. Return cached binary if valid
+        if let Some(path) = &self.cached_binary_path {
+            if fs::metadata(path).is_ok_and(|stat| stat.is_file()) {
+                return Ok(path.clone());
+            }
+        }
+
+        // 3. Resolve latest release from GitHub
+        set_language_server_installation_status(
+            language_server_id,
+            &LanguageServerInstallationStatus::CheckingForUpdate,
+        );
+
+        let release = latest_github_release(
+            "ManuLinares/c3_ls",
+            GithubReleaseOptions {
+                require_assets: true,
+                pre_release: false,
+            },
+        )?;
+
+        let (platform, arch) = current_platform();
+
+        let (os_str, arch_str, file_type, binary_name) = match (platform, arch) {
+            (Os::Linux, Architecture::X8664) => {
+                ("linux", "x86_64", DownloadedFileType::GzipTar, "c3_ls")
+            }
+            (Os::Linux, Architecture::Aarch64) => {
+                ("linux", "aarch64", DownloadedFileType::GzipTar, "c3_ls")
+            }
+            (Os::Mac, Architecture::X8664) => {
+                ("macos", "x86_64", DownloadedFileType::GzipTar, "c3_ls")
+            }
+            (Os::Mac, Architecture::Aarch64) => {
+                ("macos", "aarch64", DownloadedFileType::GzipTar, "c3_ls")
+            }
+            (Os::Windows, Architecture::X8664) => {
+                ("windows", "x86_64", DownloadedFileType::Zip, "c3_ls.exe")
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported architecture/OS combination: {platform:?} {arch:?}"
+                ))
+            }
+        };
+
+        let extension = match file_type {
+            DownloadedFileType::GzipTar => "tar.gz",
+            DownloadedFileType::Zip => "zip",
+            _ => return Err("unsupported archive type".into()),
+        };
+
+        let asset_name = format!("c3_ls-{os_str}-{arch_str}.{extension}");
+
+        let asset = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == asset_name)
+            .ok_or_else(|| format!("no asset found matching {asset_name:?}"))?;
+
+        let version_dir = format!("c3_ls-{}", release.version);
+        let binary_path = format!("{version_dir}/{binary_name}");
+
+        if !fs::metadata(&binary_path).is_ok_and(|stat| stat.is_file()) {
+            set_language_server_installation_status(
+                language_server_id,
+                &LanguageServerInstallationStatus::Downloading,
+            );
+
+            download_file(&asset.download_url, &version_dir, file_type)
+                .map_err(|e| format!("failed to download file: {e}"))?;
+
+            make_file_executable(&binary_path)?;
+        }
+
+        self.cached_binary_path = Some(binary_path.clone());
+        Ok(binary_path)
+    }
+}
 
 impl zed::Extension for C3Extension {
     fn new() -> Self {
-        Self
+        Self {
+            cached_binary_path: None,
+        }
     }
 
     fn language_server_command(
         &mut self,
-        _language_server_id: &zed::LanguageServerId,
+        language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let c3lsp_cmd = worktree.which("c3lsp");
-        let path = c3lsp_cmd.ok_or_else(|| "c3lsp must be in your path".to_string())?;
-
+        let binary_path = self.language_server_binary_path(language_server_id, worktree)?;
         Ok(zed::Command {
-            command: path,
+            command: binary_path,
             args: vec![],
             env: Default::default(),
-        })
-    }
-
-    fn label_for_completion(
-        &self,
-        _language_server_id: &zed::LanguageServerId,
-        completion: zed::lsp::Completion,
-    ) -> Option<zed::CodeLabel> {
-        // Abuse syntax highlighting for a nice colored colon
-        let precolon = "int x = s(a";
-        let colon = ": ";
-        let postcolon = " 5);\n";
-        let colon_prelude = format!("{precolon}{colon}{postcolon}\n");
-
-        // precolon(: )postcolon etc
-        let colon_span = zed::CodeLabelSpan::code_range({
-            let start = precolon.len();
-            start..start + colon.len()
-        });
-
-        let name = &completion.label;
-        let detail = &completion.detail?;
-
-        let (code, spans) = match completion.kind? {
-            // For these completion kinds, 'detail' is a type
-            kind @ (CompletionKind::Variable
-            | CompletionKind::Field
-            | CompletionKind::Method
-            | CompletionKind::Function) => {
-                // Use a 'def' to syntax highlight a type in the RHS
-                let mut ty_prelude = "def Mt = ";
-                let ty = detail;
-                let mut ty_post = ";\nint a = ";
-                let mut call = "";
-
-                if matches!(kind, CompletionKind::Function | CompletionKind::Method) {
-                    call = "()";
-                    if ty.starts_with("macro") {
-                        // Must add '{}' to highlight macro:
-                        // 'macro void(int a, int b){}'
-                        ty_prelude = "";
-                        ty_post = "{}\nint a = ";
-                    }
-                }
-
-                let code = format!("{colon_prelude}{ty_prelude}{ty}{ty_post}{name}{call};");
-
-                (
-                    code,
-                    vec![
-                        // (colonstuff def Mt = ty; int a = )name(;)
-                        zed::CodeLabelSpan::code_range({
-                            let start =
-                                colon_prelude.len() + ty_prelude.len() + ty.len() + ty_post.len();
-                            start..start + name.len()
-                        }),
-                        // :
-                        colon_span,
-                        // (colonstuff def Mt = )ty(; int a = name;)
-                        zed::CodeLabelSpan::code_range({
-                            let start = colon_prelude.len() + ty_prelude.len();
-                            start..start + ty.len()
-                        }),
-                    ],
-                )
-            }
-
-            // For other completion kinds, 'detail' is arbitrary text
-            _ => {
-                // Some invalid stuff to turn off highlighting
-                let detail_prelude = "; ])>)";
-                let name_prelude = "int a = ";
-                let code = format!("{colon_prelude}{name_prelude}{name}{detail_prelude}{detail}");
-
-                (
-                    code,
-                    vec![
-                        // (colonstuff int a = )name(; invalidstuff detail)
-                        zed::CodeLabelSpan::code_range({
-                            let start = colon_prelude.len() + name_prelude.len();
-                            start..start + name.len()
-                        }),
-                        // :
-                        colon_span,
-                        // (colonstuff int a = name; invalidstuff)detail
-                        zed::CodeLabelSpan::code_range({
-                            let start = colon_prelude.len()
-                                + name_prelude.len()
-                                + name.len()
-                                + detail_prelude.len();
-                            start..start + detail.len()
-                        }),
-                    ],
-                )
-            }
-        };
-
-        Some(zed::CodeLabel {
-            spans,
-            filter_range: (0..name.len()).into(),
-            code,
         })
     }
 }
