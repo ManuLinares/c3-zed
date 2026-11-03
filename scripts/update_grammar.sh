@@ -21,17 +21,6 @@ curl -fsSL "$RAW_URL/$LATEST_SHA/queries/highlights.scm" -o "$TARGET_DIR/highlig
 # 3. Optional injections.scm
 curl -fsSL "$RAW_URL/$LATEST_SHA/queries/injections.scm" -o "$TARGET_DIR/injections.scm" 2>/dev/null || rm -f "$TARGET_DIR/injections.scm"
 
-# 4. Download and patch indents.scm
-curl -fsSL "$RAW_URL/$LATEST_SHA/queries/indents.scm" -o "$TARGET_DIR/indents.scm"
-
-sed -i -E \
-  -e 's/^\(\[/\[/g' \
-  -e '/\(#set! indent\./d' \
-  -e 's/@indent\.begin/@indent/g' \
-  -e 's/@indent\.end/@end/g' \
-  -e 's/@indent\.branch/@outdent/g' \
-  -e 's/@indent\.align/@indent/g' \
-  -e 's/@indent\.(auto|ignore)/@_indent.\1/g' \
-  "$TARGET_DIR/indents.scm"
+# 4. indents.scm is maintained locally for Zed (upstream queries target Neovim)
 
 echo "Done."
