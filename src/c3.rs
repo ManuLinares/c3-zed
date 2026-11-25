@@ -5,6 +5,8 @@ use zed_extension_api::{
 	LanguageServerId, LanguageServerInstallationStatus, Os, Result,
 };
 
+const VERSION_DIR_PREFIX: &str = "c3_ls-";
+
 struct C3Extension {
 	cached_binary_path: Option<String>,
 }
@@ -32,14 +34,6 @@ impl C3Extension {
 			language_server_id,
 			&LanguageServerInstallationStatus::CheckingForUpdate,
 		);
-
-		let release = latest_github_release(
-			"ManuLinares/c3_ls",
-			GithubReleaseOptions {
-				require_assets: true,
-				pre_release: false,
-			},
-		)?;
 
 		let (platform, arch) = current_platform();
 
@@ -72,6 +66,22 @@ impl C3Extension {
 			_ => return Err("unsupported archive type".into()),
 		};
 
+		let release = match latest_github_release(
+			"ManuLinares/c3_ls",
+			GithubReleaseOptions {
+				require_assets: true,
+				pre_release: false,
+			},
+		) {
+			Ok(release) => release,
+			Err(e) => {
+				// Offline or rate-limited: fall back to a previous download
+				let path = find_existing_binary(binary_name).ok_or(e)?;
+				self.cached_binary_path = Some(path.clone());
+				return Ok(path);
+			}
+		};
+
 		let asset_name = format!("c3_ls-{os_str}-{arch_str}.{extension}");
 
 		let asset = release
@@ -80,7 +90,7 @@ impl C3Extension {
 			.find(|asset| asset.name == asset_name)
 			.ok_or_else(|| format!("no asset found matching {asset_name:?}"))?;
 
-		let version_dir = format!("c3_ls-{}", release.version);
+		let version_dir = format!("{VERSION_DIR_PREFIX}{}", release.version);
 		let binary_path = format!("{version_dir}/{binary_name}");
 
 		if !fs::metadata(&binary_path).is_ok_and(|stat| stat.is_file()) {
@@ -93,11 +103,37 @@ impl C3Extension {
 				.map_err(|e| format!("failed to download file: {e}"))?;
 
 			make_file_executable(&binary_path)?;
+
+			remove_outdated_versions(&version_dir)?;
 		}
 
 		self.cached_binary_path = Some(binary_path.clone());
 		Ok(binary_path)
 	}
+}
+
+fn remove_outdated_versions(version_dir: &str) -> Result<()> {
+	let entries = fs::read_dir(".").map_err(|e| format!("failed to list working directory: {e}"))?;
+	for entry in entries {
+		let entry = entry.map_err(|e| format!("failed to load directory entry: {e}"))?;
+		if entry
+			.file_name()
+			.to_str()
+			.is_none_or(|name| name.starts_with(VERSION_DIR_PREFIX) && name != version_dir)
+		{
+			fs::remove_dir_all(entry.path()).ok();
+		}
+	}
+	Ok(())
+}
+
+fn find_existing_binary(binary_name: &str) -> Option<String> {
+	fs::read_dir(".").ok()?.flatten().find_map(|entry| {
+		let dir = entry.file_name().into_string().ok()?;
+		let path = format!("{dir}/{binary_name}");
+		(dir.starts_with(VERSION_DIR_PREFIX) && fs::metadata(&path).is_ok_and(|stat| stat.is_file()))
+			.then_some(path)
+	})
 }
 
 impl zed::Extension for C3Extension {
